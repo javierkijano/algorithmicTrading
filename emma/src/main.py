@@ -10,8 +10,7 @@ import matplotlib.pyplot as plt
 from scipy.stats import spearmanr
 from scipy.cluster import hierarchy
 import pickle
-
-
+from datetime import *
 
 # checks
 #df_data['close'].iloc[0] + df_data['close_diff_cum'].iloc[-1]
@@ -21,7 +20,7 @@ import pickle
 
 class Simulator:
 
-    def __init__(self, periodType='day', periods=365, rm_cache=True):
+    def __init__(self, balance=10000, periodType='day', periods=365, rm_cache=True):
 
         api_base_url = 'https://paper-api.alpaca.markets'  # for paper trading
         api_key_id = 'PKEDQO1QF8VXGFKNCGD4'
@@ -60,12 +59,14 @@ class Simulator:
 
         self.df_data = df_data
         self.symbols = symbols
-        self.setPortfolioAllocation = np.zeros_like(self.symbols)
+        self.portfolioAllocation = np.repeat(0, len(self.symbols))
+        self.portfolioValue = 0
+        self.balance = balance
+        self.equity = 0
+        self.setPortfolioAllocation()
+        self.simulations = []
 
-
-
-
-    def setPortfolio(self):
+    def setPortfolio2(self):
         # calculate highest and less correlated assets
         df_data_corr = self.df_data['close_diff_pct'].corr()
         for symbol_i, _ in enumerate(self.symbols):
@@ -79,7 +80,7 @@ class Simulator:
         less_correlated_pairs = [(self.symbols[less_correlated_pairs[0][i]], self.symbols[less_correlated_pairs[1][i]]) for i in
                                  range(len(less_correlated_pairs[0]))]
 
-    def setPorfolio2(self, num_symbols, plot=False):
+    def setPorfolio(self, num_symbols, plot=False):
 
         corr = self.df_data['close'].corr(method="spearman").to_numpy()
         corr_linkage = hierarchy.ward(corr)
@@ -128,20 +129,48 @@ class Simulator:
         self.df_data['close_diff_cum'] = self.df_data['close_diff'].cumsum()
         self.df_data['close_diff_pct_cum'] = self.df_data['close_diff_pct'].cumprod()
 
-    def setInitialBalance(self, balance=10000):
-
-        self.balance = balance
+#    def setInitialBalance(self, balance=10000):
+#
+#        self.balance = balance
 
     def setPortfolioAllocation(self, balance_pct=0.1, portfolioAllocation=None):
 
-        self.portfolioAllocation = np.repeat(self.balance*balance_pct/len(self.symbols), len(self.symbols))
+        self.balance = self.balance + self.portfolioValue
+        if portfolioAllocation == None:
+            self.portfolioAllocation = np.repeat(self.balance*balance_pct/len(self.symbols), len(self.symbols))
+        else:
+            self.portfolioAllocation = portfolioAllocation
+        self.portfolioValue = sum(self.portfolioAllocation)
+        self.balance = self.balance - self.portfolioValue
+        self.equity = self.balance + self.portfolioValue
 
-    def simulate(self, start_date, end_date):
-        pass
+    def getStrategyPortfolioAllocation(self):
 
-    def step(self):
-        pass
+        return self.portfolioAllocation
 
+    def simulate(self, id, start_date, end_date, num_montecarlo_runs=500, plot=False):
+
+        dates = self.df_data['close'].loc[start_date:end_date].index
+        df_simulations = pd.DataFrame(data=None, index=dates, columns=['run_'+str(i) for i in range(num_montecarlo_runs)])
+        for run_i in range(num_montecarlo_runs):
+            strategyPortfolioAllocation = self.getStrategyPortfolioAllocation()
+            sample_dates = np.random.choice(dates, len(dates), replace=True)
+            s_portfolioValue, df_portfolioAllocation = self.simulate_dates(sample_dates, strategyPortfolioAllocation)
+            df_simulations['run_'+str(run_i)] = s_portfolioValue.values
+        if plot:
+            df_simulations.plot()
+        df_simulations.iloc[-1].plot.hist()
+        np.mean(df_simulations.iloc[-1])
+        np.percentile(df_simulations.iloc[-1], q=[5, 10, 25, 50, 75, 90, 95])
+
+
+    def simulate_dates(self, dates, porfolioAllocation):
+
+        bootstrap_sample = self.df_data['close_diff_pct'].loc[dates].cumprod()
+        df_portfolioAllocation = bootstrap_sample*porfolioAllocation
+        s_portfolioValue = np.sum(df_portfolioAllocation, axis=1)
+        return (s_portfolioValue, df_portfolioAllocation)
+        a=0
 
 class MontecarloSimulation:
 
@@ -151,8 +180,11 @@ class MontecarloSimulation:
     def simulate(self, start_date, periods, num_samples=100):
         pass
 
-simulator =Simulator(rm_cache=False)
-simulator.setPorfolio2(5)
+
+simulator = Simulator(balance=5000, rm_cache=False)
+simulator.setPorfolio(5)
+simulator.setPortfolioAllocation(balance_pct=0.2)
+simulator.simulate('test1', start_date=date(2019,10,1), end_date=date(2019,10,31))
 
 a=0
 
