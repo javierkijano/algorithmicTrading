@@ -18,6 +18,7 @@ import pygmo
 #df_data['close'].iloc[0] + df_data['close_diff_cum'].iloc[-1]
 
 
+
 class Simulator:
 
     def __init__(self, balance=10000, periodType='day', periods=365, rm_cache=True):
@@ -60,6 +61,7 @@ class Simulator:
         self.df_data = df_data
         self.symbols = symbols
         self.portfolioAllocation = np.repeat(0, len(self.symbols))
+        self.portfolioAllocationDirection = np.repeat('long', len(self.symbols))
         self.portfolioValue = 0
         self.balance = balance
         self.equity = 0
@@ -132,7 +134,10 @@ class Simulator:
 #
 #        self.balance = balance
 
-    def setPortfolioAllocation(self, balance_pct=0.1, portfolioAllocation=[]):
+    def setPortfolioAllocation(self, balance_pct=0.1, portfolioAllocation=[], portfolioAllocationDirection=[]):
+
+        if len(portfolioAllocationDirection) == 0:
+            self.portfolioAllocationDirection = len(self.symbols)*['long']
 
         self.balance = self.balance + self.portfolioValue
         if len(portfolioAllocation) == 0:
@@ -145,7 +150,7 @@ class Simulator:
 
     def getStrategyPortfolioAllocation(self):
 
-        return self.portfolioAllocation
+        return self.portfolioAllocation, self.portfolioAllocationDirection
 
     def montecarlo_simulate(self, train_dates, predict_dates, num_montecarlo_runs=500, conf_interval=(15,85), plot=False):
 
@@ -159,21 +164,24 @@ class Simulator:
             if run_i % 10 == 0:
                 pass
                 # print('... artificial timeseries generation (%d/%d)' % (run_i,num_montecarlo_runs))
-            strategyPortfolioAllocation = self.getStrategyPortfolioAllocation()
+            strategyPortfolioAllocation, strategyPortfolioAllocationDirection = self.getStrategyPortfolioAllocation()
             df_ts = l_df_ts[run_i]
-            df_ts = df_ts.cumprod()
+            df_ts = (df_ts - 1)*[1 if self.portfolioAllocationDirection[symbol_i] == 'long' else -1 for symbol_i, _ in enumerate(self.symbols)] + 1
+            df_ts = np.cumprod(df_ts)
+            df_ts = df_ts / df_ts.iloc[0]
             s_portfolioValue = np.sum(df_ts/df_ts.iloc[0]*strategyPortfolioAllocation, axis=1)
             df_simulations['run_'+str(run_i)] = s_portfolioValue.values
 
-        df_real = self.simulatePortfolioValue(train_dates[0], predict_dates[1], plot=False).to_frame()
+        df_porfolioValue = self.simulatePortfolioValue(train_dates[0], predict_dates[1], plot=False).to_frame()
 
-        df_real = df_real/df_real.loc[df_real.loc[predict_dates[0]:].index[0]]*self.portfolioValue
+        df_porfolioValue = df_porfolioValue/df_porfolioValue.loc[df_porfolioValue.loc[predict_dates[0]:].index[0]]*self.portfolioValue
+
         df_conf_interval = pd.DataFrame(data=np.percentile(df_simulations, q=conf_interval, axis=1).transpose(),
                                         columns=['lowerConf', 'upperConf'], index=df_simulations.index)
         df_simulations_predicted = pd.concat([df_simulations.mean(axis=1).to_frame(), df_conf_interval], axis=1)
         df_simulations_predicted.columns = ['mean'] + df_conf_interval.columns.to_list()
         if plot:
-            df_real.plot()
+            df_porfolioValue.plot()
             df_simulations_predicted['mean'].plot()
             plt.fill_between(df_simulations_predicted.index,
                              df_simulations_predicted['lowerConf'],
@@ -185,33 +193,34 @@ class Simulator:
             print('... expected mean = %f' % np.mean(df_simulations.iloc[-1]))
             np.percentile(df_simulations.iloc[-1], q=[5, 10, 25, 50, 75, 90, 95])
             a=0
-        return (df_real, df_simulations_predicted)
+        return (df_porfolioValue, df_simulations_predicted)
 
     def simulatePortfolio(self, start_date, end_date, plot=False):
 
         dates = self.df_data['close'].loc[start_date:end_date].index
-        strategyPortfolioAllocation = self.getStrategyPortfolioAllocation()
-        df_real = self.df_data['close_diff_pct_cum'].loc[dates]
-        df_real = df_real/df_real.iloc[0]*strategyPortfolioAllocation
+        strategyPortfolioAllocation, strategyPortfolioDirection = self.getStrategyPortfolioAllocation()
+        df_portfolioAllocation = (self.df_data['close_diff_pct'].loc[dates] - 1)*[1 if self.portfolioAllocationDirection[symbol_i] == 'long' else -1 for symbol_i, _ in enumerate(self.symbols)] + 1
+        df_portfolioAllocation = np.cumprod(df_portfolioAllocation)
+        df_portfolioAllocation = df_portfolioAllocation/df_portfolioAllocation.iloc[0]
+        df_portfolioAllocation = df_portfolioAllocation*strategyPortfolioAllocation
+        #df_real = df_real/df_real.iloc[0]
 
         if plot:
-            df_real.plot()
+            df_portfolioAllocation.plot()
             plt.show()
 
-        return df_real
+        return df_portfolioAllocation
 
     def simulatePortfolioValue(self, start_date, end_date, plot=False):
 
-        dates = self.df_data['close'].loc[start_date:end_date].index
-        strategyPortfolioAllocation = self.getStrategyPortfolioAllocation()
-        df_real = self.df_data['close_diff_pct_cum'].loc[dates]
-        df_real = np.sum(df_real / df_real.iloc[0] * strategyPortfolioAllocation, axis=1)
+        df_portfolioAllocation = self.simulatePortfolio(start_date, end_date, plot=False)
+        df_portfolioValue = np.sum(df_portfolioAllocation, axis=1)
 
         if plot:
-            df_real.plot()
+            df_portfolioValue.plot()
             plt.show()
 
-        return df_real
+        return df_portfolioValue
 
 
 class SyntheticTimeSeriesGenerator:
@@ -243,6 +252,7 @@ class SyntheticTimeSeriesGenerator:
         for ts_i in range(num_timeseries):
             sample_dates = np.random.choice(train_dates, len(predict_dates), replace=True)
             df_ts_i = self.df_data.loc[sample_dates]
+            df_ts_i.index = np.sort(sample_dates)
             a=0
             l_df_ts.append(df_ts_i)
         return l_df_ts
@@ -256,14 +266,16 @@ class MOoptimizationProblemDefinition:
         self.simulator = simulator
         self._start_date = start_date
         self._end_date = end_date
-        self._bounds = (-len(self.simulator.symbols)*[simulator.equity], len(self.simulator.symbols)*[simulator.equity])
+        self._bounds = (len(self.simulator.symbols)*[-simulator.equity], len(self.simulator.symbols)*[simulator.equity])
         self._num_montecarlo_runs = num_montecarlo_runs
 
     # Define objectives
     def fitness(self, x):
 
+        portfolioAllocationDirection = np.sign(x)
+        x = x / np.sign(x)
         x = x/np.sum(x)*self.simulator.portfolioValue
-        self.simulator.setPortfolioAllocation(portfolioAllocation=x)
+        self.simulator.setPortfolioAllocation(portfolioAllocation=x, portfolioAllocationDirection=portfolioAllocationDirection)
 
         #df_real, df_simulations_predicted = self.simulator.montecarlo_simulate(self._start_date, self._end_date, self._num_montecarlo_runs)
         #f1 = np.sum(df_simulations_predicted['upperConf']-df_simulations_predicted['lowerConf'], axis=0)
@@ -271,9 +283,8 @@ class MOoptimizationProblemDefinition:
 
 
         df_real = self.simulator.simulatePortfolioValue(self._start_date, self._end_date)
-        f1 = df_real.iloc[-1]
+        f1 = -np.abs(df_real.iloc[-1] - df_real.iloc[0])
         f2 = np.sum(np.absolute(df_real - np.linspace(df_real.iloc[0], df_real.iloc[-1], len(df_real.index))))
-
 
         return [f1, f2]
 
@@ -302,47 +313,56 @@ class MOoptimizationProblemDefinition:
 
 
 simulator = Simulator(balance=5000, rm_cache=False)
-simulator.setPorfolio(10)
+simulator.setPorfolio(5)
 simulator.setPortfolioAllocation(balance_pct=0.2)
-simulator.simulatePortfolio(start_date=date(2020,2,1), end_date=date(2020,3,30), plot=True)
+#simulator.simulatePortfolio(start_date=date(2020,2,1), end_date=date(2020,3,30), plot=True)
 # simulator.simulatePortfolioValue(start_date=date(2020,2,1), end_date=date(2020,3,30), plot=True)
+
+
+load_previous_optimization = False
+train_period = (date(2020,2,1), date(2020,2,28))
+predict_period = (date(2020,3,1), date(2020,3,31))
+if not load_previous_optimization:
+    #optimize
+    prob = pygmo.problem(MOoptimizationProblemDefinition(
+        simulator,
+        start_date=train_period[0],
+        end_date=train_period[1], num_montecarlo_runs=10))
+    # create population
+    pop = pygmo.population(prob, size=20 * 4)
+    # select algorithm
+    algo = pygmo.algorithm(pygmo.nsga2(gen=50, cr=0.8, m=0.1))
+    algo.set_verbosity(1)
+    # run optimization
+    pop = algo.evolve(pop)
+    f = np.vectorize(lambda x: 'long' if x == 1 else 'short')
+    best_portfolioAllocationDirections = f(np.sign(pop.get_x()))
+    pop_x = np.abs(pop.get_x())
+    best_portfolioAllocations = pop_x / np.sum(pop_x, axis=1)[:, None] * simulator.portfolioValue
+    best_fitnesses = pop.get_f()
+    pickle.dump({'best_fitnesses': best_fitnesses, 'best_portfolioAllocations': best_portfolioAllocations,
+                 'best_portfolioAllocationDirections': best_portfolioAllocationDirections},
+                open("optimizationPopulation.dat", "wb"))
+    a=0
+else:
+    optimizationData = pickle.load(open("optimizationPopulation.dat", "rb"))
+    pygmo.plot_non_dominated_fronts(optimizationData['best_fitnesses'])
+    best_index = np.where(np.all(optimizationData['best_fitnesses'] > [-100, 80], axis=1))[0][0]
+    best_portfolioAllocation = optimizationData['best_portfolioAllocations'][best_index]
+    best_portfolioAllocationDirection = optimizationData['best_portfolioAllocationDirections'][best_index]
+    simulator.setPortfolioAllocation(portfolioAllocation=best_portfolioAllocation,
+                                     portfolioAllocationDirection=best_portfolioAllocationDirection)
+    a=0
+
+# perform simulation
+simulator.simulatePortfolioValue(start_date=train_period[0], end_date=predict_period[1], plot=True)
+
+# perform simulation
 simulator.montecarlo_simulate(
-    train_dates=(date(2019,10,1), date(2019,10,31)),
-    predict_dates=(date(2019,11,1), date(2019,11,30)),
+    train_dates=train_period,
+    predict_dates=predict_period,
     num_montecarlo_runs=50,
     plot=True)
-a=0
-if False:
-    pop = pickle.load(open("optimizationPopulation.dat", "rb"))
-    pygmo.plot_non_dominated_fronts(pop.get_f())
-    best_index = np.where(np.all(pop.get_f() < [4000,1000], axis=1))[0][0]
-    best_portfolioAllocation = pop.get_x()[best_index]
-    best_portfolioAllocation = best_portfolioAllocation/np.sum(best_portfolioAllocation)*simulator.portfolioValue
-    simulator.setPortfolioAllocation(portfolioAllocation=best_portfolioAllocation)
-    simulator.montecarlo_simulate(start_date=date(2020,3,1), end_date=date(2020,3,31), num_montecarlo_runs=50, plot=True)
-
-a=0
-
-
-prob = pygmo.problem(MOoptimizationProblemDefinition(simulator, start_date=date(2020,3,1), end_date=date(2020,3,31), num_montecarlo_runs=10))
-
-# create population
-pop = pygmo.population(prob, size=20*4)
-# select algorithm
-algo = pygmo.algorithm(pygmo.nsga2(gen=50, cr=0.8, m=0.1))
-algo.set_verbosity(1)
-
-# run optimization
-
-pop = algo.evolve(pop)
-pickle.dump(pop, open("optimizationPopulation.dat", "wb"))
-
-#ndf, dl, dc, ndl = pygmo.fast_non_dominated_sorting(pop.get_f())
-#pygmo.plot_non_dominated_fronts(pop.get_f())
-#plt.plot()
-
-
-
 
 
 # extract results
